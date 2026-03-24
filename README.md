@@ -1,5 +1,6 @@
 # Projet Robot Mars - L3 MIASHS
-**Auteurs :** - Kognon-Lengo Sephora
+**Auteurs :** 
+- Kognon-Lengo Sephora
 - Moïse MUSHIMIYIMANA
 - KARANGANWA Jean Claude
 

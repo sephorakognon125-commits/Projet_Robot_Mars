@@ -24,7 +24,7 @@ int afficher_menu() {
     
     // Sécurité : si l'utilisateur saisit autre chose qu'un nombre
     if (scanf("%d", &choix) != 1) {
-        while(getchar() != '\n'); // Nettoyer le buffer d'entrée
+        while(getchar() != '\n'); // Nettoyer le buffer d'entrée pour éviter les boucles infinies
         return 0;
     }
     return choix;
@@ -33,8 +33,8 @@ int afficher_menu() {
 /**
  * FONCTION : enregistrer_passage
  * ------------------------------
- * Journal de bord local du Rover. Chaque mouvement est écrit dans un fichier 
- * nommé "rover_X.log". C'est la "boîte noire" du robot.
+ * Journal de bord local du Rover.
+ * Chaque evenement est enregistre dans un fichiernommé "rover_X.log". C'est la "boîte noire" du robot.
  */
 void enregistrer_passage(int id_rover, int x, int y, int bat, char* statut) {
     char nom_fichier[32];
@@ -59,8 +59,10 @@ void enregistrer_passage(int id_rover, int x, int y, int bat, char* statut) {
  * -------------------------------
  * C'est l'intelligence de mouvement. Elle gère le trajet case par case.
  * Règle : Déplacement Horizontal (X) d'abord, puis Vertical (Y).
+ * Consomme l'énergie
  * 
  * Détecte les trésors et informe le serveur en temps réel.
+ * Informe le serveur en temps réel via le socket ouvert.
  */
 void executer_deplacement(int *cur_x, int *cur_y, int cible_x, int cible_y, int *batterie, int id_du_rover, int sock) {
     Paquet alerte; // Structure pour envoyer des messages pendant le trajet
@@ -111,6 +113,7 @@ void executer_deplacement(int *cur_x, int *cur_y, int cible_x, int cible_y, int 
     }
 }
 
+
 int main(int argc, char *argv[]) {
     srand(time(NULL));
 
@@ -120,31 +123,51 @@ int main(int argc, char *argv[]) {
     // On récupère l'ID via la ligne de commande (ex: ./rover 2)
     int id_rover = (argc > 1) ? atoi(argv[1]) : 1;
     int x = 0, y = 0, bat = 100; 
-    int port_actuel = PORT_TERRE;
 
-    printf("[SYSTÈME] Rover %d paré au décollage.\n", id_rover);
+    // On ne cicle que le port fixe 8080
+    printf("[SYSTÈME] Rover %d paré au décollage. cible fixe : port %d\n", id_rover, PORT_TERRE);
 
     while (bat > 0) {
+        // --- SÉCURITÉ AUTONOME (Même sans serveur) ---
+        /* Si la batterie descend sous le SEUIL_BATTERIE (20%), le rover passe
+           en priorité vitale. Il ignore les ordres et se recharge, même si
+           la radio est coupée. C'est sa fonction "Auto-Survie". */
+        if (bat <= SEUIL_BATTERIE) {
+            printf("[AUTO-SURVIE] Batterie critique (%d%%). Recharge d'urgence activée.\n", bat);
+            enregistrer_passage(id_rover, x, y, bat, "RECHARGE_AUTONOME_SURVIE");
+            
+            while (bat < 100) {
+                sleep(1); 
+                bat++;
+                if (bat % 25 == 0) printf("  Récupération énergie : %d%%...\n", bat);
+            }
+            printf("[AUTO-SURVIE] Batterie pleine. Reprise de la veille radio.\n");
+        }
+
         int choix = afficher_menu();
         if (choix == 5) break; // Quitter le programme
 
-        // 1. CRÉATION DU SOCKET TCP
+        // 1. CRÉATION DU SOCKET TCP ou ÉTABLISSEMENT DE LA LIAISON RADIO
         sock = socket(AF_INET, SOCK_STREAM, 0);
         serv_addr.sin_family = AF_INET;
-        serv_addr.sin_port = htons(port_actuel);
+        serv_addr.sin_port = htons(PORT_TERRE); // Toujours 8080
         inet_pton(AF_INET, ADRESSE_TERRE, &serv_addr.sin_addr);
 
-        // 2. CONNEXION AVEC REDONDANCE (Mode Alpha)
+        // 2. TENTATIVE DE CONNEXION (Boucle de résilience)
+        // Si la Terre est KO, on ne change pas de port. On attend que Alpha prenne le 8080.
         if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-            if (port_actuel == PORT_TERRE) {
-                printf("[ALERTE] Terre injoignable. Bascule sur le port ALPHA (%d)...\n", PORT_ALPHA);
-                port_actuel = PORT_ALPHA;
-                close(sock);
-                continue; // On relance la boucle pour retenter la connexion
-            } else {
-                printf("[ERREUR] Station de secours injoignable. Fin du programme.\n");
-                break;
-            }
+            /* SI LA CONNEXION ÉCHOUE : 
+            On ne change pas de port. On part du principe que si la Terre est KO,
+            le Rover Alpha prendra le port 8080. Le rover se met en sommeil 
+            prolongé (sleep 5) pour économiser ses circuits. */
+
+            printf("[ALERTE] Terre injoignable!!\n [RADIO] Silence radio sur le port %d...\n", PORT_TERRE);
+            printf("[ATTENTE] La Terre est hors ligne. En attente du relais Alpha sur ce port...\n");
+            close(sock);
+            sleep(5); // On attend un peu avant de permettre de réessayer pour economiser la batterie
+
+            continue; // On relance la boucle pour retenter la connexion
+        
         }
 
         // 3. PRÉPARATION DU PAQUET DE DEMANDE
@@ -165,17 +188,20 @@ int main(int argc, char *argv[]) {
 
         // 5. RÉCEPTION DE L'ORDRE DU SERVEUR
         if (read(sock, &p, sizeof(Paquet)) > 0) {
-            printf("[RADIO] Message Terre : %s\n", p.corps);
+            // Le rover affiche le message sans savoir qui parle (Terre ou Alpha)
+            printf("[RADIO] Message reçu : %s\n", p.corps);
 
             // ANALYSE DE L'ORDRE REÇU
             if (p.type == ORDRE_DEPLACER) {
                 // On lance le mouvement intelligent
                 executer_deplacement(&x, &y, p.x, p.y, &bat, id_rover, sock);
             } 
-            else if (p.type == ORDRE_RECHARGER) {
-                // BOUCLE DE RECHARGE (1% = 1 seconde)
+            else if (p.type == ORDRE_RECHARGER || p.type == MODE_SECOURS) {
+                printf("[ACTION] Mode recharge ordonné par la base.\n");
                 printf("[RECHARGE] Exposition aux panneaux solaires...\n");
                 enregistrer_passage(id_rover, x, y, bat, "DÉBUT_RECHARGE");
+
+                // BOUCLE DE RECHARGE (1% = 1 seconde)
                 while (bat < 100) {
                     sleep(1);
                     bat++;

@@ -9,8 +9,7 @@
 /**
  * FONCTION : journaliser_alpha
  * ----------------------------
- * Comme pour la Terre, Alpha doit garder une trace de ses décisions
- * lorsqu'il passe en mode "Chef de mission".
+ * Enregistre les actions d'Alpha lorsqu'il passe en mode "Chef de Mission".
  */
 void journaliser_alpha(int id_rover, const char* action) {
     FILE *f = fopen("rover_alpha.log", "a");
@@ -19,80 +18,76 @@ void journaliser_alpha(int id_rover, const char* action) {
     struct tm *t = localtime(&now);
     char s_now[25];
     strftime(s_now, sizeof(s_now), "%Y-%m-%d %H:%M:%S", t);
-    fprintf(f, "[%s] [ALPHA RELAIS] Rover %d | %s\n", s_now, id_rover, action);
+    fprintf(f, "[%s] [ALPHA-RELAIS] Rover %d | ACTION: %s\n", s_now, id_rover, action);
     fflush(f);
     fclose(f);
 }
 
 int main() {
-    int sock_client, srv_fd, new_sock;
-    struct sockaddr_in serv_addr;
+    int sock_test, srv_fd;
+    struct sockaddr_in addr;
     int opt = 1;
-    Paquet p;
 
-    printf("[ROVER ALPHA] Initialisation du système de secours...\n");
+    printf("[ROVER ALPHA] Système de veille de la Station Terre activé.\n");
 
-    // --- ÉTAPE 1 : TENTATIVE DE CONNEXION À LA TERRE (Mode Client) ---
-    // Alpha essaie de voir si la base (Port 8080) est active.
-    sock_client = socket(AF_INET, SOCK_STREAM, 0);
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT_TERRE); // 8080
-    inet_pton(AF_INET, ADRESSE_TERRE, &serv_addr.sin_addr);
+    // --- ÉTAPE 1 : SURVEILLANCE DE LA TERRE (Mode Sentinelle) ---
+    /* Le Rover Alpha essaie de se connecter à la Terre toutes les 5 secondes.
+       Tant que la connexion réussit, il sait que le port 8080 est occupé. */
+    while(1) {
+        sock_test = socket(AF_INET, SOCK_STREAM, 0);
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(PORT_TERRE); // Cible : 8080
+        inet_pton(AF_INET, ADRESSE_TERRE, &addr.sin_addr);
 
-    printf("[ALPHA] Vérification de la liaison Terre (Port %d)...\n", PORT_TERRE);
-
-    if (connect(sock_client, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >= 0) {
-        // SI LA TERRE RÉPOND : Alpha se comporte comme un rover normal.
-        printf("[ALPHA] Liaison Terre OK. Mode exploration standard.\n");
-        p.id_envoyeur = 99; // ID spécial pour Alpha
-        p.type = STATUS_QUO;
-        send(sock_client, &p, sizeof(Paquet), 0);
-        close(sock_client);
-        exit(0); // Dans ce cas, Alpha a fini son job de test.
+        if (connect(sock_test, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            // ÉCHEC DE CONNEXION : La Terre est éteinte ou crashée.
+            printf("\n[ALERTE] Station Terre injoignable sur le port %d !\n", PORT_TERRE);
+            printf("[MUTATION] Le Rover Alpha prend le contrôle du port 8080...\n");
+            close(sock_test);
+            break; // On sort de la veille pour devenir le serveur
+        }
+        
+        printf("[ALPHA] Check-up Terre : OK. En veille...\r");
+        fflush(stdout);
+        close(sock_test);
+        sleep(5); 
     }
 
-    // --- ÉTAPE 2 : MUTATION EN MODE RELAIS (Mode Serveur) ---
-    // Si connect() a échoué, on arrive ici. Alpha prend le contrôle du réseau.
-    printf("[ALERTE] Terre injoignable ! Mutation en CENTRE DE CONTRÔLE DE SECOURS.\n");
-    close(sock_client);
-
-    // Création du socket serveur pour écouter les autres Rovers
+    // --- ÉTAPE 2 : MUTATION EN SERVEUR DE SECOURS (Usurpation du Port 8080) ---
+    /* Alpha ouvre maintenant son propre service d'écoute sur le port 8080.
+       C'est transparent pour les autres rovers qui cherchent toujours ce port. */
     srv_fd = socket(AF_INET, SOCK_STREAM, 0);
     setsockopt(srv_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    // IMPORTANT : Alpha écoute sur le PORT_ALPHA (8081) 
-    // pour que les rovers qui basculent puissent le trouver.
-    serv_addr.sin_port = htons(PORT_ALPHA); 
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(PORT_TERRE); // ALPHA DEVIENT LE PORT 8080
 
-    if (bind(srv_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Échec mutation Bind");
+    if (bind(srv_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("[ERREUR] Impossible de lier le port 8080. Conflit détecté.");
         exit(EXIT_FAILURE);
     }
 
     listen(srv_fd, 5);
-    printf("[ALPHA] Serveur de relais actif sur le port %d. En attente des rescapés...\n", PORT_ALPHA);
+    printf("[ALPHA] Mode RELAIS actif. Je remplace la Terre sur le port %d.\n", PORT_TERRE);
 
+    // --- ÉTAPE 3 : GESTION DES ROVERS RESCAPÉS ---
     while (1) {
-        // Attente d'une connexion d'un rover "perdu"
-        new_sock = accept(srv_fd, NULL, NULL);
+        int new_sock = accept(srv_fd, NULL, NULL);
         if (new_sock < 0) continue;
 
+        Paquet p;
         if (read(new_sock, &p, sizeof(Paquet)) > 0) {
-            printf("[ALPHA RELAIS] Requête reçue du Rover %d (Position: %d,%d)\n", p.id_envoyeur, p.x, p.y);
-
-            // LOGIQUE DE SECOURS : Alpha donne des ordres de prudence
-            // On ne veut pas que les rovers s'éparpillent sans la Terre.
-            p.type = MODE_SECOURS; 
-            strcpy(p.corps, "Ici Alpha. Liaison Terre perdue. RECHARGEZ et attendez les instructions.");
+            printf("[ALPHA] Secours du Rover %d (Position: %d,%d)\n", p.id_envoyeur, p.x, p.y);
             
-            // On force la recharge pour économiser l'énergie en attendant la Terre
+            // Ordre de survie : Alpha demande aux rovers de ne plus bouger.
+            p.type = MODE_SECOURS; 
+            strcpy(p.corps, "Ici Alpha (Relais). Terre KO. RECHARGEZ et attendez.");
+            
             journaliser_alpha(p.id_envoyeur, "ORDRE_SURVIE_ENVOYE");
-
             send(new_sock, &p, sizeof(Paquet), 0);
         }
         close(new_sock);
-        printf("[ALPHA] Rover %d mis en sécurité.\n--------------------------\n", p.id_envoyeur);
     }
 
     close(srv_fd);

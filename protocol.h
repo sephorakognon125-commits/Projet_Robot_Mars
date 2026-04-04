@@ -15,6 +15,7 @@
 #define CHANCE_TRESOR 10     // 1 chance sur 10 de trouver un trésor par case
 #define SEUIL_BATTERIE 20    // Seuil critique déclenchant la recharge solaire
 #define MAX_ROVERS 10        // Limite théorique de la flotte pour le serveur
+#define MAX_TRESORS 100      // Capacité maximale de trésors
 
 /* * --- TYPES DE MESSAGES --- 
  * Définit le protocole de communication. 
@@ -44,6 +45,13 @@ typedef struct {
     time_t horodatage;    // Temps Unix pour la synchronisation des logs
 } Paquet;
 
+// --- STRUCTURES POUR LA CARTE (Mémoire du serveur) ---
+typedef struct {
+    int x;
+    int y;
+    int id_rover; // Qui l'a trouvé ?
+} Tresor;
+
 /* * 2. Structure CLIENT (Côté Serveur)
  * Permet au serveur de garder en mémoire l'état de chaque Rover connecté
  * sans avoir à lui redemander à chaque fois.
@@ -58,14 +66,19 @@ typedef struct {
     Paquet dernier_paquet; // Historique du dernier échange
 } ClientRover;
 
+
+
 /* * 3. Structure SERVEUR 
  * État global de la Station Terre.
  */
 typedef struct {
-    int id_serveur;       // Toujours 0
-    int x, y;             // Coordonnées de la base (souvent 0,0)
-    int nb_rovers;        // Compteur actif de la flotte
-    // On pourrait ajouter ici un tableau de trésors trouvés
+    int id_serveur;                     // Toujours 0
+    int x, y;                           // Coordonnées de la base (souvent 0,0)
+    int nb_rovers;                      // Compteur actif de la flotte
+    int nb_tresors_trouves;             // Compteur de trésors trouvés
+    Tresor carte_tresors[MAX_TRESORS];  // Tableau de trésors trouvés
+    ClientRover flotte[MAX_ROVERS];     // Défini dans protocol.h
 } ServeurTerre;
+
 
 #endif
